@@ -7,17 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <!-- 開機後重新排程鬧鐘 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- 確保鬧鐘觸發時設備保持喚醒 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Android 14+ 需要 USE_EXACT_ALARM 替代 SCHEDULE_EXACT_ALARM -->
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-    <!-- 全螢幕 Intent 權限 - 讓 app 在背景時也能顯示全螢幕通知 -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <!-- 震動權限 -->
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- 解鎖鍵盤鎖 -->
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
 
     <application
@@ -30,6 +24,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.LifeManager">
+        
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -44,26 +39,26 @@
             </intent-filter>
         </activity>
 
+        <!-- Lock Service for focus mode -->
         <service
-            android:name=".LockService"
+            android:name=".feature.lock.LockService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse">
-            <!-- Android 14+ 需要描述 specialUse 的用途 -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="screen_lock_for_focus_mode" />
         </service>
 
-        <!-- 任務鬧鐘接收器 -->
+        <!-- Task Alarm Receiver -->
         <receiver 
-            android:name=".TaskAlarmReceiver"
+            android:name=".alarm.TaskAlarmReceiver"
             android:enabled="true"
             android:exported="false" />
         
-        <!-- 開機廣播接收器 - 重新排程所有待執行任務 -->
+        <!-- Boot Receiver - Reschedule all pending tasks -->
         <receiver
-            android:name=".BootReceiver"
+            android:name=".alarm.BootReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
