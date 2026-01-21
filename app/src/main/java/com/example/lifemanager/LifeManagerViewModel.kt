@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.lifemanager.data.Task
 import com.example.lifemanager.data.TaskRepository
 import com.example.lifemanager.data.TaskStatus
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,8 +17,10 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Calendar
+import javax.inject.Inject
 
-class LifeManagerViewModel(private val repository: TaskRepository) : ViewModel() {
+@HiltViewModel
+class LifeManagerViewModel @Inject constructor(private val repository: TaskRepository) : ViewModel() {
 
     private val _selectedDate = MutableStateFlow(getTodayTimestamp())
     val selectedDate = _selectedDate.asStateFlow()
