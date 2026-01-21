@@ -29,7 +29,10 @@ class TaskAlarmReceiver : BroadcastReceiver() {
             return
         }
         
-        Log.d(TAG, "Processing alarm for task: $taskId")
+        val taskDurationMinutes = intent.getLongExtra(EXTRA_TASK_DURATION_MINUTES, 30L)
+        val taskTitle = intent.getStringExtra(EXTRA_TASK_TITLE) ?: "任務"
+        
+        Log.d(TAG, "Processing alarm for task: $taskId, duration: $taskDurationMinutes min")
 
         // Acquire wake lock to keep device awake during processing
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -44,10 +47,10 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         
         try {
             createAlarmNotificationChannel(context)
-            showFullScreenNotification(context, taskId)
+            showFullScreenNotification(context, taskId, taskTitle)
             Log.d(TAG, "Full screen notification sent")
             
-            startLockService(context, taskId)
+            startLockService(context, taskId, taskDurationMinutes, taskTitle)
         } catch (e: Exception) {
             Log.e(TAG, "Error in onReceive", e)
         }
@@ -79,7 +82,7 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         }
     }
     
-    private fun showFullScreenNotification(context: Context, taskId: Int) {
+    private fun showFullScreenNotification(context: Context, taskId: Int, taskTitle: String) {
         val contentIntent = createMainActivityIntent(context, taskId)
         val contentPendingIntent = PendingIntent.getActivity(
             context,
@@ -100,7 +103,7 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         
         val notification = NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setContentTitle("⏰ 任務時間到！")
+            .setContentTitle("⏰ $taskTitle - 時間到！")
             .setContentText("點擊開始專注模式")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -125,18 +128,20 @@ class TaskAlarmReceiver : BroadcastReceiver() {
         }
     }
     
-    private fun startLockService(context: Context, taskId: Int) {
+    private fun startLockService(context: Context, taskId: Int, durationMinutes: Long, taskTitle: String) {
         try {
             val serviceIntent = Intent(context, LockService::class.java).apply {
                 action = LockService.ACTION_START_LOCK
                 putExtra(EXTRA_TASK_ID, taskId)
+                putExtra(EXTRA_TASK_DURATION_MINUTES, durationMinutes)
+                putExtra(EXTRA_TASK_TITLE, taskTitle)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
             } else {
                 context.startService(serviceIntent)
             }
-            Log.d(TAG, "LockService started")
+            Log.d(TAG, "LockService started with duration: $durationMinutes min")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start LockService", e)
         }
@@ -145,6 +150,8 @@ class TaskAlarmReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "TaskAlarmReceiver"
         const val EXTRA_TASK_ID = "EXTRA_TASK_ID"
+        const val EXTRA_TASK_DURATION_MINUTES = "EXTRA_TASK_DURATION_MINUTES"
+        const val EXTRA_TASK_TITLE = "EXTRA_TASK_TITLE"
         const val ACTION_AUTO_LOCK = "ACTION_AUTO_LOCK"
         const val ALARM_CHANNEL_ID = "TaskAlarmChannel"
         const val NOTIFICATION_ID_BASE = 10000

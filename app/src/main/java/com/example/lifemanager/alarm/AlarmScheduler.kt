@@ -40,6 +40,8 @@ class AlarmSchedulerImpl(private val context: Context) : AlarmScheduler {
 
         val intent = Intent(context, TaskAlarmReceiver::class.java).apply {
             putExtra(TaskAlarmReceiver.EXTRA_TASK_ID, task.id)
+            putExtra(TaskAlarmReceiver.EXTRA_TASK_DURATION_MINUTES, task.plannedDurationMinutes)
+            putExtra(TaskAlarmReceiver.EXTRA_TASK_TITLE, task.title)
         }
         
         val pendingIntent = PendingIntent.getBroadcast(

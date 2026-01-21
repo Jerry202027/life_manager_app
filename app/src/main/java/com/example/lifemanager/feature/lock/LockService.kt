@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.os.Build
+import android.os.CountDownTimer
 import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
@@ -17,8 +19,8 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.example.lifemanager.MainActivity
@@ -30,6 +32,11 @@ class LockService : Service() {
     private var lockView: View? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentTaskId: Int = -1
+    private var taskDurationMinutes: Long = 30L
+    private var taskTitle: String = "任務"
+    
+    private var countDownTimer: CountDownTimer? = null
+    private var remainingTimeTextView: TextView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -51,7 +58,10 @@ class LockService : Service() {
         }
 
         currentTaskId = intent?.getIntExtra(TaskAlarmReceiver.EXTRA_TASK_ID, -1) ?: -1
-        Log.d(TAG, "Task ID: $currentTaskId")
+        taskDurationMinutes = intent?.getLongExtra(TaskAlarmReceiver.EXTRA_TASK_DURATION_MINUTES, 30L) ?: 30L
+        taskTitle = intent?.getStringExtra(TaskAlarmReceiver.EXTRA_TASK_TITLE) ?: "任務"
+        
+        Log.d(TAG, "Task ID: $currentTaskId, Duration: $taskDurationMinutes min, Title: $taskTitle")
         
         startForeground(FOREGROUND_NOTIFICATION_ID, createNotification())
         Log.d(TAG, "Foreground service started")
@@ -62,6 +72,7 @@ class LockService : Service() {
         if (Settings.canDrawOverlays(this)) {
             Log.d(TAG, "Has overlay permission, showing lock window")
             showLockWindow()
+            startCountdownTimer()
         } else {
             Log.e(TAG, "No overlay permission!")
         }
@@ -69,7 +80,57 @@ class LockService : Service() {
         return START_STICKY
     }
     
+    private fun startCountdownTimer() {
+        val durationMillis = taskDurationMinutes * 60 * 1000L
+        
+        countDownTimer?.cancel()
+        countDownTimer = object : CountDownTimer(durationMillis, 1000L) {
+            override fun onTick(millisUntilFinished: Long) {
+                updateRemainingTimeDisplay(millisUntilFinished)
+            }
+            
+            override fun onFinish() {
+                Log.d(TAG, "Task time finished, auto-unlocking")
+                completeTaskAndUnlock()
+            }
+        }.start()
+        
+        Log.d(TAG, "Countdown timer started for $taskDurationMinutes minutes")
+    }
+    
+    private fun updateRemainingTimeDisplay(millisUntilFinished: Long) {
+        val hours = millisUntilFinished / (1000 * 60 * 60)
+        val minutes = (millisUntilFinished % (1000 * 60 * 60)) / (1000 * 60)
+        val seconds = (millisUntilFinished % (1000 * 60)) / 1000
+        
+        val timeText = if (hours > 0) {
+            String.format("%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format("%02d:%02d", minutes, seconds)
+        }
+        
+        remainingTimeTextView?.text = timeText
+    }
+    
+    private fun completeTaskAndUnlock() {
+        countDownTimer?.cancel()
+        stopLockWindow()
+        releaseWakeLock()
+        cancelAlarmNotification()
+        
+        // Navigate to work log screen
+        val intent = Intent(this@LockService, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(ACTION_UNLOCK_COMPLETE, true)
+            putExtra(TaskAlarmReceiver.EXTRA_TASK_ID, currentTaskId)
+        }
+        startActivity(intent)
+        
+        stopSelf()
+    }
+    
     private fun stopLock() {
+        countDownTimer?.cancel()
         stopLockWindow()
         releaseWakeLock()
         cancelAlarmNotification()
@@ -122,58 +183,124 @@ class LockService : Service() {
         if (lockView != null) return
 
         val frameLayout = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.parseColor("#1A1A2E"))
             setOnTouchListener { _, _ -> true }
         }
 
-        // Lock text
-        val textView = TextView(this).apply {
-            text = "鎖定中 - 請專注"
+        // Main content container
+        val contentLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        
+        // Task title
+        val titleTextView = TextView(this).apply {
+            text = taskTitle
             setTextColor(Color.WHITE)
-            textSize = 24f
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        contentLayout.addView(titleTextView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = 40
+        })
+        
+        // Lock icon/text
+        val lockIconTextView = TextView(this).apply {
+            text = "🔒"
+            textSize = 64f
+            gravity = Gravity.CENTER
+        }
+        contentLayout.addView(lockIconTextView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = 20
+        })
+        
+        // Status text
+        val statusTextView = TextView(this).apply {
+            text = "專注中"
+            setTextColor(Color.parseColor("#E94560"))
+            textSize = 28f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        contentLayout.addView(statusTextView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = 60
+        })
+        
+        // Remaining time label
+        val remainingLabelTextView = TextView(this).apply {
+            text = "剩餘時間"
+            setTextColor(Color.parseColor("#AAAAAA"))
+            textSize = 16f
+            gravity = Gravity.CENTER
+        }
+        contentLayout.addView(remainingLabelTextView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = 10
+        })
+        
+        // Remaining time countdown
+        remainingTimeTextView = TextView(this).apply {
+            text = formatInitialTime(taskDurationMinutes)
+            setTextColor(Color.WHITE)
+            textSize = 56f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        contentLayout.addView(remainingTimeTextView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        
+        // Hint text at bottom
+        val hintTextView = TextView(this).apply {
+            text = "任務完成後將自動解鎖"
+            setTextColor(Color.parseColor("#666666"))
+            textSize = 14f
             gravity = Gravity.CENTER
         }
         
-        val textParams = FrameLayout.LayoutParams(
+        val contentParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.CENTER
         }
-        frameLayout.addView(textView, textParams)
-
-        // Unlock button
-        val unlockButton = Button(this).apply {
-            text = "完成任務 (解鎖)"
-            setOnClickListener {
-                stopLockWindow()
-                releaseWakeLock()
-                cancelAlarmNotification()
-                
-                // Navigate to work log screen
-                val intent = Intent(this@LockService, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    putExtra(ACTION_UNLOCK_COMPLETE, true)
-                    putExtra(TaskAlarmReceiver.EXTRA_TASK_ID, currentTaskId)
-                }
-                startActivity(intent)
-                
-                stopSelf()
-            }
-        }
+        frameLayout.addView(contentLayout, contentParams)
         
-        val buttonParams = FrameLayout.LayoutParams(
+        val hintParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            bottomMargin = 200
+            bottomMargin = 100
         }
-        frameLayout.addView(unlockButton, buttonParams)
+        frameLayout.addView(hintTextView, hintParams)
 
         lockView = frameLayout
         setupSystemUiVisibility()
         addLockViewToWindow()
+    }
+    
+    private fun formatInitialTime(minutes: Long): String {
+        val hours = minutes / 60
+        val mins = minutes % 60
+        return if (hours > 0) {
+            String.format("%d:%02d:00", hours, mins)
+        } else {
+            String.format("%02d:00", mins)
+        }
     }
     
     @Suppress("DEPRECATION")
@@ -226,10 +353,12 @@ class LockService : Service() {
             }
         }
         lockView = null
+        remainingTimeTextView = null
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        countDownTimer?.cancel()
         stopLockWindow()
         releaseWakeLock()
     }
@@ -254,7 +383,7 @@ class LockService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("專注模式運行中")
-            .setContentText("您的手機目前處於鎖定狀態")
+            .setContentText("$taskTitle - 剩餘 $taskDurationMinutes 分鐘")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -272,7 +401,6 @@ class LockService : Service() {
         private const val SCREEN_WAKE_LOCK_TAG = "LifeManager::ScreenWakeLock"
         private const val SERVICE_WAKE_LOCK_TAG = "LifeManager::LockServiceWakeLock"
         private const val SCREEN_WAKE_LOCK_TIMEOUT = 10 * 1000L
-        private const val SERVICE_WAKE_LOCK_TIMEOUT = 60 * 60 * 1000L
+        private const val SERVICE_WAKE_LOCK_TIMEOUT = 4 * 60 * 60 * 1000L // Extended to 4 hours max
     }
 }
-
