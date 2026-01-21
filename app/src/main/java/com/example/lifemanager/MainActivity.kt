@@ -33,40 +33,60 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.lifemanager.data.AppDatabase
 import com.example.lifemanager.data.Task
-import com.example.lifemanager.data.TaskRepository
 import com.example.lifemanager.data.TaskStatus
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import javax.inject.Inject
 
+// 用於傳遞自動鎖定事件的資料類別
+data class AutoLockEvent(val taskId: Int, val timestamp: Long = System.currentTimeMillis())
+
+// 用於傳遞解鎖完成事件的資料類別（需要導航到任務紀錄頁面）
+data class UnlockCompleteEvent(val taskId: Int, val timestamp: Long = System.currentTimeMillis())
+
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    private lateinit var alarmScheduler: AlarmScheduler
+    @Inject lateinit var alarmScheduler: AlarmScheduler
+    
+    // 使用 StateFlow 來傳遞自動鎖定事件給 Composable
+    private val _autoLockEvent = MutableStateFlow<AutoLockEvent?>(null)
+    val autoLockEvent: StateFlow<AutoLockEvent?> = _autoLockEvent.asStateFlow()
+    
+    // 使用 StateFlow 來傳遞解鎖完成事件給 Composable（導航到任務紀錄頁面）
+    private val _unlockCompleteEvent = MutableStateFlow<UnlockCompleteEvent?>(null)
+    val unlockCompleteEvent: StateFlow<UnlockCompleteEvent?> = _unlockCompleteEvent.asStateFlow()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        alarmScheduler = AlarmSchedulerImpl(this)
-        val database = AppDatabase.getDatabase(applicationContext)
-        val repository = TaskRepository(database.taskDao())
-        val viewModelFactory = LifeManagerViewModelFactory(repository)
-
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    LifeManagerApp(viewModelFactory, alarmScheduler)
+                    LifeManagerApp(
+                        alarmScheduler = alarmScheduler,
+                        autoLockEvent = autoLockEvent,
+                        onAutoLockConsumed = { _autoLockEvent.value = null },
+                        unlockCompleteEvent = unlockCompleteEvent,
+                        onUnlockCompleteConsumed = { _unlockCompleteEvent.value = null }
+                    )
                 }
             }
         }
@@ -74,15 +94,32 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent) // Update the activity's intent
-        intent?.let { handleIntent(it) }
+        setIntent(intent)
+        handleIntent(intent)
     }
 
     private fun handleIntent(intent: Intent) {
-        // This function is now mainly for logging or pre-processing if needed.
-        // The main logic is handled by LaunchedEffect in the Composable.
+        // 當鬧鐘觸發並帶有 AUTO_LOCK flag 時，發送事件給 Composable
+        if (intent.getBooleanExtra(TaskAlarmReceiver.ACTION_AUTO_LOCK, false)) {
+            val taskId = intent.getIntExtra(TaskAlarmReceiver.EXTRA_TASK_ID, -1)
+            if (taskId != -1) {
+                _autoLockEvent.value = AutoLockEvent(taskId)
+                // 移除 flag 防止重複觸發
+                intent.removeExtra(TaskAlarmReceiver.ACTION_AUTO_LOCK)
+            }
+        }
+        
+        // 當從 LockService 解鎖完成時，導航到任務紀錄頁面
+        if (intent.getBooleanExtra(LockService.ACTION_UNLOCK_COMPLETE, false)) {
+            val taskId = intent.getIntExtra(TaskAlarmReceiver.EXTRA_TASK_ID, -1)
+            if (taskId != -1) {
+                _unlockCompleteEvent.value = UnlockCompleteEvent(taskId)
+                // 移除 flag 防止重複觸發
+                intent.removeExtra(LockService.ACTION_UNLOCK_COMPLETE)
+            }
+        }
     }
 }
 
@@ -94,13 +131,26 @@ object Routes {
 }
 
 @Composable
-fun LifeManagerApp(viewModelFactory: LifeManagerViewModelFactory, alarmScheduler: AlarmScheduler) {
+fun LifeManagerApp(
+    alarmScheduler: AlarmScheduler,
+    autoLockEvent: StateFlow<AutoLockEvent?>,
+    onAutoLockConsumed: () -> Unit,
+    unlockCompleteEvent: StateFlow<UnlockCompleteEvent?>,
+    onUnlockCompleteConsumed: () -> Unit
+) {
     val navController = rememberNavController()
-    val viewModel: LifeManagerViewModel = viewModel(factory = viewModelFactory)
+    val viewModel: LifeManagerViewModel = hiltViewModel()
     val context = LocalContext.current
     val activity = context as? Activity
     
     var currentTask by remember { mutableStateOf<Task?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    
+    // 收集自動鎖定事件
+    val autoLockEventValue by autoLockEvent.collectAsState()
+    
+    // 收集解鎖完成事件
+    val unlockCompleteEventValue by unlockCompleteEvent.collectAsState()
     
     fun startLocking(task: Task) {
         currentTask = task
@@ -119,17 +169,31 @@ fun LifeManagerApp(viewModelFactory: LifeManagerViewModelFactory, alarmScheduler
         }
     }
 
-    LaunchedEffect(Unit) {
-        val intent = (context as? Activity)?.intent
-        if (intent?.getBooleanExtra(TaskAlarmReceiver.ACTION_AUTO_LOCK, false) == true) {
-            val taskId = intent.getIntExtra(TaskAlarmReceiver.EXTRA_TASK_ID, -1)
-            if (taskId != -1) {
-                val task = viewModel.getTaskById(taskId)
-                task?.let { 
-                    intent.removeExtra(TaskAlarmReceiver.ACTION_AUTO_LOCK)
-                    startLocking(it)
-                 }
+    // 監聽自動鎖定事件 - 當鬧鐘觸發時執行
+    LaunchedEffect(autoLockEventValue) {
+        autoLockEventValue?.let { event ->
+            val task = viewModel.getTaskById(event.taskId)
+            task?.let { 
+                startLocking(it)
             }
+            onAutoLockConsumed() // 清除事件，防止重複觸發
+        }
+    }
+    
+    // 監聽解鎖完成事件 - 當從 LockService 解鎖時，導航到任務紀錄頁面
+    LaunchedEffect(unlockCompleteEventValue) {
+        unlockCompleteEventValue?.let { event ->
+            val task = viewModel.getTaskById(event.taskId)
+            task?.let { 
+                currentTask = it
+                // 停止 LockTask 模式
+                try { activity?.stopLockTask() } catch (e: Exception) { e.printStackTrace() }
+                // 導航到任務紀錄頁面
+                navController.navigate(Routes.WORK_LOG) { 
+                    popUpTo(Routes.HOME) { inclusive = false }
+                }
+            }
+            onUnlockCompleteConsumed() // 清除事件，防止重複觸發
         }
     }
 
@@ -139,12 +203,9 @@ fun LifeManagerApp(viewModelFactory: LifeManagerViewModelFactory, alarmScheduler
                 viewModel = viewModel,
                 alarmScheduler = alarmScheduler,
                 onTaskClick = { task ->
+                    // 點擊任務只顯示詳情，不會鎖定螢幕
                     currentTask = task
-                    if (task.status == TaskStatus.COMPLETED) {
-                        navController.navigate(Routes.TASK_DETAIL)
-                    } else {
-                        startLocking(task)
-                    }
+                    navController.navigate(Routes.TASK_DETAIL)
                 }
             )
         }
@@ -296,7 +357,8 @@ fun AddTaskDialog(
                     Toast.makeText(context, "不能在過去的時間新增任務", Toast.LENGTH_SHORT).show()
                 } else {
                     if (title.isNotBlank()) {
-                        val colorInt = selectedColor.value.toLong().and(0xFFFFFFFF).toInt()
+                        // 使用 toArgb() 正確轉換顏色為 ARGB Int
+                        val colorInt = selectedColor.toArgb()
                         onConfirm(title, duration.toLongOrNull() ?: 60, selectedDateTime, colorInt)
                     }
                 }
@@ -394,33 +456,105 @@ fun TaskBlock(task: Task, modifier: Modifier, onClick: () -> Unit) {
 
 @Composable
 fun TaskDetailScreen(task: Task?, onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Button(onClick = onBack) { Text("← 返回") }
         Spacer(modifier = Modifier.height(20.dp))
         if (task != null) {
+            // 計算任務的預定開始時間
+            val taskScheduledTime = task.scheduledDate + (task.scheduledTimeMinutes * 60 * 1000L)
+            val currentTime = System.currentTimeMillis()
+            val isAfterScheduledTime = currentTime >= taskScheduledTime
+            
+            // 任務標題與基本資訊 (執行時間前後都顯示)
             Box(modifier = Modifier.fillMaxWidth().background(Color(task.color), RoundedCornerShape(8.dp)).padding(20.dp)) {
                 Column {
                     Text(text = task.title, style = MaterialTheme.typography.headlineLarge, color = Color.White)
                     val startH = task.scheduledTimeMinutes / 60
                     val startM = task.scheduledTimeMinutes % 60
-                    Text(text = "預計: %02d:%02d (%d分鐘)".format(startH, startM, task.plannedDurationMinutes), color = Color.White)
+                    val endTotalMinutes = task.scheduledTimeMinutes + task.plannedDurationMinutes.toInt()
+                    val endH = (endTotalMinutes / 60) % 24
+                    val endM = endTotalMinutes % 60
+                    Text(
+                        text = "預定時間: %02d:%02d - %02d:%02d".format(startH, startM, endH, endM), 
+                        color = Color.White.copy(alpha = 0.9f)
+                    )
+                    Text(
+                        text = "預計時長: %d 分鐘".format(task.plannedDurationMinutes), 
+                        color = Color.White.copy(alpha = 0.9f)
+                    )
                 }
             }
+            
             Spacer(modifier = Modifier.height(20.dp))
-            if (task.status == TaskStatus.COMPLETED) {
-                Text(text = "狀態：✅ 已完成", color = Color(0xFF2E7D32), fontSize = 20.sp)
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(text = "工作紀錄 (Log):", style = MaterialTheme.typography.titleMedium)
-                Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                    Text(text = task.workLog ?: "（無紀錄）", modifier = Modifier.padding(16.dp))
+            
+            // 狀態顯示
+            when (task.status) {
+                TaskStatus.COMPLETED -> {
+                    Text(text = "狀態：✅ 已完成", color = Color(0xFF2E7D32), fontSize = 20.sp)
                 }
-                 if (task.startTime != null && task.endTime != null) {
-                    val duration = (task.endTime - task.startTime) / 1000 / 60
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("實際耗時: $duration 分鐘")
+                TaskStatus.IN_PROGRESS -> {
+                    Text(text = "狀態：🔒 進行中", color = Color(0xFF1976D2), fontSize = 20.sp)
                 }
-            } else {
-                Text(text = "狀態：尚未完成", color = Color.Gray)
+                TaskStatus.ABANDONED -> {
+                    Text(text = "狀態：❌ 已放棄", color = Color(0xFFD32F2F), fontSize = 20.sp)
+                }
+                TaskStatus.PLANNED -> {
+                    if (isAfterScheduledTime) {
+                        Text(text = "狀態：⏰ 已過預定時間 (尚未執行)", color = Color(0xFFFF9800), fontSize = 20.sp)
+                    } else {
+                        Text(text = "狀態：📋 計劃中", color = Color.Gray, fontSize = 20.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        // 顯示距離開始還有多久
+                        val remainingMillis = taskScheduledTime - currentTime
+                        val remainingMinutes = (remainingMillis / 1000 / 60).toInt()
+                        val remainingHours = remainingMinutes / 60
+                        val remainingMins = remainingMinutes % 60
+                        if (remainingHours > 0) {
+                            Text(text = "距離開始還有 $remainingHours 小時 $remainingMins 分鐘", color = Color.Gray)
+                        } else {
+                            Text(text = "距離開始還有 $remainingMins 分鐘", color = Color.Gray)
+                        }
+                    }
+                }
+            }
+            
+            // 執行時間後 或 已完成的任務：顯示任務紀錄區塊
+            if (isAfterScheduledTime || task.status == TaskStatus.COMPLETED) {
+                Spacer(modifier = Modifier.height(20.dp))
+                Divider()
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Text(text = "📝 任務紀錄", style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 實際執行時間紀錄
+                if (task.startTime != null) {
+                    val startTimeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+                    Text(text = "實際開始: ${startTimeFormat.format(Date(task.startTime))}", color = Color.Gray)
+                }
+                if (task.endTime != null) {
+                    val endTimeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+                    Text(text = "實際結束: ${endTimeFormat.format(Date(task.endTime))}", color = Color.Gray)
+                }
+                if (task.startTime != null && task.endTime != null) {
+                    val actualDuration = (task.endTime - task.startTime) / 1000 / 60
+                    Text(text = "實際耗時: $actualDuration 分鐘", color = Color.Gray)
+                }
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                // 工作紀錄/心得
+                Text(text = "工作心得:", style = MaterialTheme.typography.titleSmall)
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp), 
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Text(
+                        text = task.workLog ?: "（尚無紀錄）", 
+                        modifier = Modifier.padding(16.dp),
+                        color = if (task.workLog == null) Color.Gray else MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         } else {
             Text("找不到任務資料")
