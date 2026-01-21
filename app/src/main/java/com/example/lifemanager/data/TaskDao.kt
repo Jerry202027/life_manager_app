@@ -14,6 +14,10 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE id = :id")
     suspend fun getTaskById(id: Int): Task?
+    
+    // 獲取從指定日期開始的所有計劃中任務（用於開機後重新排程）
+    @Query("SELECT * FROM tasks WHERE scheduledDate >= :fromDate AND status = 'PLANNED' ORDER BY scheduledDate ASC, scheduledTimeMinutes ASC")
+    suspend fun getPendingTasksFromDate(fromDate: Long): List<Task>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTask(task: Task): Long
