@@ -61,7 +61,7 @@ private fun TimeLabelsColumn() {
                 Text(
                     text = "%02d:00".format(hour),
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
@@ -201,6 +201,8 @@ private data class TaskLayout(
 
 @Composable
 private fun GridLines() {
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    
     Canvas(modifier = Modifier.fillMaxSize()) {
         val width = size.width
         
@@ -209,7 +211,7 @@ private fun GridLines() {
             
             // Full hour line
             drawLine(
-                color = Color.LightGray,
+                color = gridColor,
                 start = Offset(0f, y),
                 end = Offset(width, y),
                 strokeWidth = 1f
@@ -219,7 +221,7 @@ private fun GridLines() {
             if (hour < 24) {
                 val yHalf = y + (HOUR_HEIGHT.toPx() / 2)
                 drawLine(
-                    color = Color.LightGray.copy(alpha = 0.5f),
+                    color = gridColor.copy(alpha = 0.4f),
                     start = Offset(0f, yHalf),
                     end = Offset(width, yHalf),
                     strokeWidth = 1f

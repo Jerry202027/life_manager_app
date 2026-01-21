@@ -224,9 +224,10 @@ object DatabaseModule {
 
 | 修改項目 | 檔案位置 | 說明 |
 |---------|---------|------|
-| App 主題顏色 | `core/designsystem/theme/Color.kt` | 定義顏色常數 |
-| 深色/淺色模式 | `core/designsystem/theme/Theme.kt` | 切換 Color Scheme |
+| App 主題顏色 | `core/designsystem/theme/Color.kt` | Arctic Night 冷冽配色 |
+| 深色/淺色模式 | `core/designsystem/theme/Theme.kt` | DarkColorScheme / LightColorScheme |
 | 字型大小 | `core/designsystem/theme/Type.kt` | Typography 設定 |
+| 任務顏色選項 | `core/designsystem/theme/Color.kt` | `TaskColorOptions` 列表 |
 | 任務方塊樣式 | `feature/schedule/component/TaskBlock.kt` | Card 樣式、圓角、陰影 |
 | 新增任務對話框 | `feature/schedule/component/AddTaskDialog.kt` | 對話框內容和樣式 |
 | 時間表格格線 | `feature/schedule/component/TimeTable.kt` | Grid lines 顏色和間距 |

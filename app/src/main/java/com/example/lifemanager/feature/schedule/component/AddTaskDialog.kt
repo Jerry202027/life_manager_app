@@ -29,17 +29,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.lifemanager.core.designsystem.theme.TaskColorOptions
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
-
-private val TASK_COLORS = listOf(
-    Color(0xFF2196F3), // Blue
-    Color(0xFFF44336), // Red
-    Color(0xFF4CAF50), // Green
-    Color(0xFF9C27B0), // Purple
-    Color(0xFFFF9800)  // Orange
-)
 
 @Composable
 fun AddTaskDialog(
@@ -51,7 +44,7 @@ fun AddTaskDialog(
     var title by remember { mutableStateOf("") }
     var duration by remember { mutableStateOf("60") }
     var selectedDateTime by remember { mutableStateOf(Calendar.getInstance()) }
-    var selectedColor by remember { mutableStateOf(TASK_COLORS[0]) }
+    var selectedColor by remember { mutableStateOf(TaskColorOptions[0]) }
 
     val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
     val dateFormat = SimpleDateFormat("yyyy/MM/dd", Locale.getDefault())
@@ -121,17 +114,35 @@ fun AddTaskDialog(
                     singleLine = true
                 )
                 
-                // Color picker
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                // Color picker - 分成兩排均勻顯示
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    TASK_COLORS.forEach { color ->
-                        ColorPickerItem(
-                            color = color,
-                            isSelected = selectedColor == color,
-                            onClick = { selectedColor = color }
-                        )
+                    // 第一排 4 個顏色
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        TaskColorOptions.take(4).forEach { color ->
+                            ColorPickerItem(
+                                color = color,
+                                isSelected = selectedColor == color,
+                                onClick = { selectedColor = color }
+                            )
+                        }
+                    }
+                    // 第二排 4 個顏色
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        TaskColorOptions.drop(4).forEach { color ->
+                            ColorPickerItem(
+                                color = color,
+                                isSelected = selectedColor == color,
+                                onClick = { selectedColor = color }
+                            )
+                        }
                     }
                 }
             }
@@ -181,12 +192,12 @@ private fun ColorPickerItem(
 ) {
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(36.dp)
             .clip(CircleShape)
             .background(color)
             .clickable(onClick = onClick)
             .border(
-                width = 3.dp,
+                width = if (isSelected) 3.dp else 0.dp,
                 color = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
                 shape = CircleShape
             )
