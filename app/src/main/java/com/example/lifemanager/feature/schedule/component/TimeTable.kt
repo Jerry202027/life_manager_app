@@ -19,11 +19,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.lifemanager.core.domain.model.Task
+import kotlin.math.max
 
 private val HOUR_HEIGHT = 60.dp
 private const val TOTAL_HOURS = 25
+private val MIN_TASK_HEIGHT = 44.dp // 最小任務高度，確保短任務也能清楚顯示
 
 @Composable
 fun TimeTable(
@@ -71,31 +75,129 @@ private fun TasksArea(
     onTaskClick: (Task) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val density = LocalDensity.current
+    val minHeightPx = with(density) { MIN_TASK_HEIGHT.toPx() }
+    val hourHeightPx = with(density) { HOUR_HEIGHT.toPx() }
+    
+    // 計算任務的欄位配置（處理重疊）
+    val taskLayouts = calculateTaskLayouts(tasks, hourHeightPx, minHeightPx)
+    
     Box(
         modifier = modifier.height(HOUR_HEIGHT * TOTAL_HOURS)
     ) {
         // Grid lines
         GridLines()
         
-        // Task blocks
-        tasks.forEach { task ->
-            val startMinutes = task.scheduledTimeMinutes
-            val duration = task.plannedDurationMinutes
-            val offsetTop = (startMinutes / 60f) * HOUR_HEIGHT.value
-            val itemHeight = (duration / 60f) * HOUR_HEIGHT.value
-            
+        // Task blocks with smart positioning
+        taskLayouts.forEach { layout ->
             TaskBlock(
-                task = task,
+                task = layout.task,
+                isCompact = layout.isCompact,
                 modifier = Modifier
-                    .padding(start = 4.dp, end = 8.dp)
-                    .fillMaxWidth()
-                    .offset(y = offsetTop.dp)
-                    .height(itemHeight.dp),
-                onClick = { onTaskClick(task) }
+                    .padding(start = 4.dp, end = 4.dp)
+                    .fillMaxWidth(layout.widthFraction)
+                    .offset(x = layout.offsetX, y = layout.offsetY)
+                    .height(layout.displayHeight),
+                onClick = { onTaskClick(layout.task) }
             )
         }
     }
 }
+
+/**
+ * 計算每個任務的顯示位置和大小
+ */
+private fun calculateTaskLayouts(
+    tasks: List<Task>,
+    hourHeightPx: Float,
+    minHeightPx: Float
+): List<TaskLayout> {
+    if (tasks.isEmpty()) return emptyList()
+    
+    // 按開始時間排序
+    val sortedTasks = tasks.sortedBy { it.scheduledTimeMinutes }
+    
+    // 追蹤每個欄位的結束時間
+    val columnEndTimes = mutableListOf<Float>()
+    val taskColumns = mutableMapOf<Task, Int>()
+    val overlappingGroups = mutableListOf<MutableSet<Task>>()
+    
+    for (task in sortedTasks) {
+        val taskStartY = (task.scheduledTimeMinutes / 60f) * hourHeightPx
+        val actualHeight = (task.plannedDurationMinutes / 60f) * hourHeightPx
+        val displayHeight = max(actualHeight, minHeightPx)
+        val taskEndY = taskStartY + displayHeight
+        
+        // 找到可用的欄位
+        var column = columnEndTimes.indexOfFirst { it <= taskStartY }
+        if (column == -1) {
+            column = columnEndTimes.size
+            columnEndTimes.add(taskEndY)
+        } else {
+            columnEndTimes[column] = taskEndY
+        }
+        taskColumns[task] = column
+        
+        // 找到重疊的任務群組
+        val overlappingGroup = overlappingGroups.find { group ->
+            group.any { existing ->
+                val existingStartY = (existing.scheduledTimeMinutes / 60f) * hourHeightPx
+                val existingActualHeight = (existing.plannedDurationMinutes / 60f) * hourHeightPx
+                val existingDisplayHeight = max(existingActualHeight, minHeightPx)
+                val existingEndY = existingStartY + existingDisplayHeight
+                // 檢查是否重疊
+                taskStartY < existingEndY && taskEndY > existingStartY
+            }
+        }
+        
+        if (overlappingGroup != null) {
+            overlappingGroup.add(task)
+        } else {
+            overlappingGroups.add(mutableSetOf(task))
+        }
+    }
+    
+    // 計算每個群組的總欄數
+    val groupColumns = mutableMapOf<Task, Int>()
+    for (group in overlappingGroups) {
+        val maxColumn = group.maxOfOrNull { taskColumns[it] ?: 0 } ?: 0
+        val totalColumns = maxColumn + 1
+        for (task in group) {
+            groupColumns[task] = totalColumns
+        }
+    }
+    
+    // 生成佈局結果
+    return sortedTasks.map { task ->
+        val startMinutes = task.scheduledTimeMinutes
+        val actualHeightDp = (task.plannedDurationMinutes / 60f) * HOUR_HEIGHT.value
+        val displayHeightDp = max(actualHeightDp, MIN_TASK_HEIGHT.value)
+        val isCompact = actualHeightDp < MIN_TASK_HEIGHT.value
+        
+        val column = taskColumns[task] ?: 0
+        val totalColumns = groupColumns[task] ?: 1
+        val widthFraction = (1f / totalColumns) - 0.01f
+        val offsetXDp = (column.toFloat() / totalColumns) * 100f // 簡化的 X 偏移計算
+        
+        TaskLayout(
+            task = task,
+            offsetX = offsetXDp.dp,
+            offsetY = ((startMinutes / 60f) * HOUR_HEIGHT.value).dp,
+            displayHeight = displayHeightDp.dp,
+            widthFraction = widthFraction,
+            isCompact = isCompact
+        )
+    }
+}
+
+private data class TaskLayout(
+    val task: Task,
+    val offsetX: Dp,
+    val offsetY: Dp,
+    val displayHeight: Dp,
+    val widthFraction: Float,
+    val isCompact: Boolean
+)
 
 @Composable
 private fun GridLines() {
