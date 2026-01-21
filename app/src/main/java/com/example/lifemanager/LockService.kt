@@ -1,5 +1,6 @@
 package com.example.lifemanager
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,6 +11,8 @@ import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -20,6 +23,8 @@ class LockService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var lockView: View? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var currentTaskId: Int = -1
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -32,18 +37,87 @@ class LockService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.d(TAG, "onStartCommand called with action: ${intent?.action}")
+        
         if (intent?.action == ACTION_STOP_LOCK) {
+            android.util.Log.d(TAG, "Stopping lock")
             stopLockWindow()
+            releaseWakeLock()
+            cancelAlarmNotification()
             stopSelf()
             return START_NOT_STICKY
         }
 
+        // 獲取任務 ID
+        currentTaskId = intent?.getIntExtra(TaskAlarmReceiver.EXTRA_TASK_ID, -1) ?: -1
+        android.util.Log.d(TAG, "Task ID: $currentTaskId")
+        
+        // 創建通知並啟動前台服務
         val notification = createNotification()
-        startForeground(1, notification)
+        startForeground(FOREGROUND_NOTIFICATION_ID, notification)
+        android.util.Log.d(TAG, "Foreground service started")
+        
+        // 喚醒螢幕
+        wakeUpScreen()
+        android.util.Log.d(TAG, "Screen wake up called")
+        
+        // 獲取 WakeLock 保持設備喚醒
+        acquireWakeLock()
 
-        showLockWindow()
+        // 檢查是否有 overlay 權限，如果有則顯示鎖定畫面
+        if (Settings.canDrawOverlays(this)) {
+            android.util.Log.d(TAG, "Has overlay permission, showing lock window")
+            showLockWindow()
+        } else {
+            android.util.Log.e(TAG, "No overlay permission!")
+        }
 
         return START_STICKY
+    }
+    
+    private fun wakeUpScreen() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        
+        // 檢查螢幕是否關閉
+        if (!powerManager.isInteractive) {
+            // 使用 WakeLock 喚醒螢幕
+            @Suppress("DEPRECATION")
+            val screenWakeLock = powerManager.newWakeLock(
+                PowerManager.FULL_WAKE_LOCK or 
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or 
+                PowerManager.ON_AFTER_RELEASE,
+                "LifeManager::ScreenWakeLock"
+            )
+            screenWakeLock.acquire(10 * 1000L)  // 持有 10 秒足夠喚醒螢幕
+        }
+    }
+    
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            // 使用 PARTIAL_WAKE_LOCK 保持 CPU 運行（不會耗電太多）
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "LifeManager::LockServiceWakeLock"
+            )
+            wakeLock?.acquire(60 * 60 * 1000L) // 最多持有 1 小時
+        }
+    }
+    
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+            }
+        }
+        wakeLock = null
+    }
+    
+    private fun cancelAlarmNotification() {
+        if (currentTaskId != -1) {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(TaskAlarmReceiver.NOTIFICATION_ID_BASE + currentTaskId)
+        }
     }
 
     private fun showLockWindow() {
@@ -69,11 +143,23 @@ class LockService : Service() {
         paramsText.gravity = Gravity.CENTER
         frameLayout.addView(textView, paramsText)
 
-        // 緊急解鎖按鈕
+        // 解鎖按鈕（開發用 - 完成任務）
         val btnUnlock = android.widget.Button(this)
-        btnUnlock.text = "緊急解鎖 (開發用)"
+        btnUnlock.text = "完成任務 (解鎖)"
         btnUnlock.setOnClickListener {
+            // 停止鎖定畫面
             stopLockWindow()
+            releaseWakeLock()
+            cancelAlarmNotification()
+            
+            // 啟動 MainActivity 並導航到任務紀錄頁面
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(ACTION_UNLOCK_COMPLETE, true)
+                putExtra(TaskAlarmReceiver.EXTRA_TASK_ID, currentTaskId)
+            }
+            startActivity(intent)
+            
             stopSelf()
         }
         val paramsBtn = android.widget.FrameLayout.LayoutParams(
@@ -102,16 +188,25 @@ class LockService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
             else 
+                @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE,
             
-            // 關鍵 Flags 修改：
-            // FLAG_LAYOUT_NO_LIMITS: 允許視窗延伸到螢幕邊界外 (覆蓋狀態列/導航列)
-            // FLAG_NOT_TOUCH_MODAL: 允許我們接收視窗外的 touch? 不，我們要全擋。
-            // FLAG_SHOW_WHEN_LOCKED: 即使螢幕鎖定也要顯示 (選用)
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
+            // 關鍵 Flags：
+            // FLAG_LAYOUT_IN_SCREEN: 視窗佔據整個螢幕
+            // FLAG_LAYOUT_NO_LIMITS: 允許視窗延伸到螢幕邊界外
+            // FLAG_NOT_FOCUSABLE: 不獲取焦點（讓通知等可以正常顯示）- 移除以攔截觸控
+            // FLAG_SHOW_WHEN_LOCKED: 在鎖定畫面上顯示
+            // FLAG_TURN_SCREEN_ON: 打開螢幕
+            // FLAG_KEEP_SCREEN_ON: 保持螢幕開啟
+            @Suppress("DEPRECATION")
+            (WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or 
             WindowManager.LayoutParams.FLAG_FULLSCREEN or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD),
             
             PixelFormat.TRANSLUCENT
         )
@@ -140,6 +235,7 @@ class LockService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         stopLockWindow()
+        releaseWakeLock()
     }
 
     private fun createNotificationChannel() {
@@ -170,8 +266,11 @@ class LockService : Service() {
     }
 
     companion object {
+        private const val TAG = "LockService"
         const val CHANNEL_ID = "LockServiceChannel"
         const val ACTION_START_LOCK = "START_LOCK"
         const val ACTION_STOP_LOCK = "STOP_LOCK"
+        const val ACTION_UNLOCK_COMPLETE = "ACTION_UNLOCK_COMPLETE"  // 解鎖完成，導航到任務紀錄
+        const val FOREGROUND_NOTIFICATION_ID = 1
     }
 }
